@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Infrastructure Monitoring Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+
+  <style>
+    /* Global Dark Theme Styles */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: Arial, sans-serif;
+    }
+    body {
+      background: #1e1f22;
+      color: #fff;
+      overflow-x: hidden;
+    }
+    h1, h2, h3, h4, h5 {
+      margin: 0;
+      font-weight: normal;
+    }
+
+    /* Dashboard Container */
+    .dashboard-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+
+    /* Header / Title */
+    .dashboard-header {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    .dashboard-header h1 {
+      font-size: 1.8rem;
+    }
+
+    /* Button Bar */
+    .button-bar {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    .button-bar button, .button-bar input[type="file"] {
+      display: inline-block;
+      margin: 0.5rem;
+      padding: 8px 12px;
+      background: #6c0344;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .button-bar button:hover, .button-bar input[type="file"]:hover {
+      background: #640452;
+    }
+
+    /* Stats Bar */
+    .stats-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      flex: 1;
+      min-width: 200px;
+      background: #2a2b2f;
+      border-radius: 8px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+    .stat-card h2 {
+      font-size: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+    .stat-card p {
+      font-size: 1.2rem;
+      color: #ddd;
+    }
+
+    /* Charts + Map Layout */
+    .main-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    .chart-section, .map-section {
+      flex: 1;
+      min-width: 350px;
+      background: #2a2b2f;
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .chart-section h3, .map-section h3 {
+      margin-bottom: 0.5rem;
+      font-size: 1.2rem;
+      color: #ccc;
+    }
+    /* Chart Canvas */
+    .chart-container {
+      width: 100%;
+      height: 280px;
+      position: relative;
+    }
+    canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* Leaflet Map */
+    #map {
+      width: 100%;
+      height: 280px;
+      border-radius: 5px;
+    }
+
+    /* Bottom Table / Additional Info */
+    .bottom-row {
+      margin-top: 1rem;
+      background: #2a2b2f;
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .bottom-row h3 {
+      margin-bottom: 0.5rem;
+      font-size: 1.2rem;
+      color: #ccc;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    table th, table td {
+      border: 1px solid #3a3b3f;
+      padding: 0.6rem;
+      text-align: left;
+    }
+    table th {
+      background: #950177;
+    }
+
+    /* Print Styles */
+    @media print {
+      .button-bar {
+        display: none;
+      }
+      body {
+        background: #efebeb;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="dashboard-container">
+    <!-- Header -->
+    <div class="dashboard-header">
+      <h1>Infrastructure Monitoring Report</h1>
+      <h1>Para Forest</h1>
+    </div>
+
+    <!-- Button Bar for CSV Uploads and PDF Download -->
+    <div class="button-bar">
+      <!-- CSV Upload for Points Data -->
+      <input type="file" id="csvFileInput" accept=".csv" title="Upload Points Data CSV">
+      <!-- Load Sample Data Button -->
+      <button id="loadSampleBtn">Load Sample Data</button>
+      <!-- Download PDF Button -->
+      <button id="downloadPdfBtn">Download PDF</button>
+      <!-- Print Button -->
+      <button onclick="window.print()">Print / Save as PDF</button>
+    </div>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar">
+      <div class="stat-card">
+        <h2>Total Points</h2>
+        <p id="totalPoints">120</p>
+      </div>
+      <div class="stat-card">
+        <h2>Remediated</h2>
+        <p id="remediatedPoints">2</p>
+      </div>
+      <div class="stat-card">
+        <h2>Watching</h2>
+        <p id="watchPoints">0</p>
+      </div>
+      <div class="stat-card">
+        <h2>Erosion Susceptibility Risk</h2>
+        <p id="erosionValue">High</p>
+      </div>
+      <div class="stat-card">
+        <h2>Rainfall (mm)</h2>
+        <p id="rainfallValue">Loading...</p>
+      </div>
+    </div>
+
+    <!-- Main Content: Charts & Map -->
+    <div class="main-row">
+      <!-- Bar Chart Section -->
+      <div class="chart-section">
+        <h3>Exposure By Erosion class</h3>
+        <div class="chart-container">
+          <canvas id="barChart"></canvas>
+        </div>
+      </div>
+      <!-- Line Chart Section: Historic Rainfall -->
+      <div class="chart-section">
+        <h3>Monthly Rainfall Totals</h3>
+        <div class="chart-container">
+          <canvas id="lineChart"></canvas>
+        </div>
+      </div>
+      <!-- Map Section -->
+      <div class="map-section">
+        <h3>Map Overview</h3>
+        <div id="map"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Table: Points Overview -->
+    <div class="bottom-row">
+      <h3>Points Overview</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Point ID</th>
+            <th>Status</th>
+            <th>Erosion Risk</th>
+            <th>Remediated?</th>
+            <th>Rainfall (mm)</th>
+          </tr>
+        </thead>
+        <tbody id="pointsTableBody">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    /***************************************************
+     * 1) MAP INIT (Leaflet)
+     ***************************************************/
+    const map = L.map('map').setView([-41.42, 173.85], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Hardcoded GeoJSON data from points_geojson.geojson
+    const geojsonData = {
+      "type": "FeatureCollection",
+      "name": "points_geojson",
+      "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+      "features": [
+        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "fairholme", "date_created": "2025-10-14T17:16:03.586", "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.825113084101162, -41.450378359174032 ] } },
+        { "type": "Feature", "properties": { "id": 1, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.39998, Lon: 173.94205", "status": "watch" }, "geometry": { "type": "Point", "coordinates": [ 173.942053519644503, -41.399980118741027 ] } },
+        { "type": "Feature", "properties": { "id": 2, "priority": "low", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.396353, Lon: 173.9331", "status": "archive" }, "geometry": { "type": "Point", "coordinates": [ 173.933111922710339, -41.396353473959259 ] } },
+        { "type": "Feature", "properties": { "id": 3, "priority": "medium", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.406736, Lon: 173.9405", "status": "watch" }, "geometry": { "type": "Point", "coordinates": [ 173.940505894622817, -41.406735558831571 ] } },
+        { "type": "Feature", "properties": { "id": 4, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.400507, Lon: 173.9488", "status": "remediated" }, "geometry": { "type": "Point", "coordinates": [ 173.948870090229093, -41.400506509577561 ] } },
+        { "type": "Feature", "properties": { "id": 5, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.395523, Lon: 173.9353", "status": "remediated" }, "geometry": { "type": "Point", "coordinates": [ 173.935387682749081, -41.395522907452978 ] } },
+        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "fairholme", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.823855913806085, -41.448796553710132 ] } },
+        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "fairholme", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.826338635995683, -41.445918661002807 ] } },
+        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "jv_road", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.803015191242849, -41.414552300632302 ] } },
+        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "jvroad", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.806552652128346, -41.415530835791245 ] } },
+        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "jvroad", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.803704907352596, -41.411214005299442 ] } }
+      ]
+    };
+
+    // Add GeoJSON layer to the map
+    const geojsonLayer = L.geoJSON(geojsonData, {
+      pointToLayer: function (feature, latlng) {
+        return L.circleMarker(latlng, {
+          radius: 5,
+          fillColor: "#ff7800",
+          color: "#000",
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.8
+        });
+      }
+    }).addTo(map);
+    // map.fitBounds(geojsonLayer.getBounds()); // Removed to maintain regional zoom
+
+    /***************************************************
+     * 2) CHARTS INIT (Chart.js)
+     ***************************************************/
+    // Bar Chart: Erosion Risk Distribution (Sample Data)
+    const barCtx = document.getElementById('barChart').getContext('2d');
+    const barChart = new Chart(barCtx, {
+      type: 'bar',
+      data: {
+        labels: ['Low', 'Medium', 'High', 'Very High'],
+        datasets: [{
+          label: 'Exposure (%)',
+          data: [7, 15, 75, 3],
+          backgroundColor: ['#3fcf30','#f9ec00','#f58a00','#f70000']
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { color: '#ccc' } },
+          y: { 
+            ticks: { 
+              color: '#ccc',
+              callback: function(value) {
+                return value + '%'
+              }
+            }, 
+            beginAtZero: true,
+            max: 100
+          }
+        },
+        plugins: {
+          legend: { labels: { color: '#ccc' } },
+          title: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                let label = context.dataset.label || '';
+                if (label) {
+                  label += ': ';
+                }
+                if (context.parsed.y !== null) {
+                  label += context.parsed.y + '%';
+                }
+                return label;
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // Line Chart: Historic Rainfall (Default Sample Data)
+    // Data from Waikawa at DOONS valley graph.
+    const lineCtx = document.getElementById('lineChart').getContext('2d');
+    const lineChart = new Chart(lineCtx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Monthly Rainfall (mm)',
+          data: [],
+          borderColor: '#49abff',
+          backgroundColor: 'rgba(73,171,255,0.1)',
+          tension: 0.3,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { color: '#ccc' } },
+          y: { 
+            ticks: { color: '#ccc' }, 
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Rainfall (mm)',
+              color: '#ccc'
+            }
+          }
+        },
+        plugins: {
+          legend: { labels: { color: '#ccc' } },
+          title: { display: false }
+        }
+      }
+    });
+
+    /***************************************************
+     * 3) DEFAULT TABLE DATA (Points Overview)
+     ***************************************************/
+    const defaultTableData = [
+      { id: 'P1', status: 'Alert',    erosion: 'High',     remediated: 'No',  rainfall: 98 },
+      { id: 'P2', status: 'Watching', erosion: 'Medium',   remediated: 'No',  rainfall: 75 },
+      { id: 'P3', status: 'Archived', erosion: 'Low',      remediated: 'Yes', rainfall: 60 },
+      { id: 'P4', status: 'Alert',    erosion: 'Very High',remediated: 'No',  rainfall: 120 },
+      { id: 'P5', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 88 },
+    ];
+
+    const tbody = document.getElementById('pointsTableBody');
+    function fillTable(tableData) {
+      tbody.innerHTML = '';
+      tableData.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${item.id}</td>
+          <td>${item.status}</td>
+          <td>${item.erosion}</td>
+          <td>${item.remediated}</td>
+          <td>${item.rainfall}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+    fillTable(defaultTableData);
+
+    // Default Stats
+    const defaultTotalPoints = 120;
+    document.getElementById('totalPoints').textContent = defaultTotalPoints;
+    document.getElementById('remediatedPoints').textContent = Math.round(defaultTotalPoints * 0.8);
+    document.getElementById('watchPoints').textContent = geojsonData.features.length;
+    document.getElementById('erosionValue').textContent = 'High';   
+    document.getElementById('rainfallValue').textContent = 'Loading...'; 
+
+    /***************************************************
+     * 4) CSV UPLOAD FOR POINTS DATA
+     ***************************************************/
+    document.getElementById('csvFileInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: function(results) {
+          const data = results.data;
+          if (!data || data.length === 0) return;
+          
+          // Expecting columns: 'Point ID', 'Status', 'Longitude', 'Latitude', ...
+          const csvTableData = data.map(row => {
+            return {
+              id: row['Point ID'] || 'Unknown',
+              status: row['Status'] || 'N/A',
+              erosion: 'N/A', // Not in new CSV
+              remediated: (row['Status'] || '').toLowerCase() === 'remediated' ? 'Yes' : 'No',
+              rainfall: 'N/A' // Not in new CSV
+            };
+          });
+          fillTable(csvTableData);
+
+          // Update stats from CSV data
+          const totalPoints = data.length;
+          const remediatedCount = data.filter(r => (r.Status || '').toLowerCase() === 'remediated').length;
+          const watchCount = data.filter(r => (r.Status || '').toLowerCase() === 'watched').length;
+          
+          document.getElementById('totalPoints').textContent = totalPoints;
+          document.getElementById('remediatedPoints').textContent = remediatedCount;
+          document.getElementById('watchPoints').textContent = watchCount;
+          // document.getElementById('erosionValue').textContent = '...'; // Not updated from this CSV
+          // document.getElementById('rainfallValue').textContent = '...'; // Not updated from this CSV
+        }
+      });
+    });
+
+    /***************************************************
+     * 5) LOAD SAMPLE DATA BUTTON FOR POINTS
+     ***************************************************/
+    document.getElementById('loadSampleBtn').addEventListener('click', function() {
+      const sampleData = [
+        { id: 'S1', status: 'Alert',    erosion: 'High',     remediated: 'No',  rainfall: 120 },
+        { id: 'S2', status: 'Watching', erosion: 'Medium',   remediated: 'No',  rainfall: 85 },
+        { id: 'S3', status: 'Archived', erosion: 'Low',      remediated: 'Yes', rainfall: 42 },
+        { id: 'S4', status: 'Alert',    erosion: 'Very High',remediated: 'No',  rainfall: 150 },
+        { id: 'S5', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 60 },
+        { id: 'S6', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 55 }
+      ];
+      fillTable(sampleData);
+      // Update stats from sample data
+      updateStatsFromData(sampleData);
+    });
+
+    /***************************************************
+     * 6) RAINFALL API FETCH
+     ***************************************************/
+    async function loadMonthlyRainfall(lat, lng) {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 1);
+
+      const formatDate = (date) => date.toISOString().split('T')[0];
+      const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${formatDate(startDate)}&end_date=${formatDate(endDate)}&daily=precipitation_sum&timezone=Pacific/Auckland`;
+
+      try {
+        const data = await fetch(url).then(r => r.json());
+        
+        const monthlyTotals = {};
+        data.daily.time.forEach((dateStr, index) => {
+          const date = new Date(dateStr);
+          const month = date.toLocaleString('default', { month: 'short', year: '2-digit' });
+          if (!monthlyTotals[month]) {
+            monthlyTotals[month] = 0;
+          }
+          monthlyTotals[month] += data.daily.precipitation_sum[index];
+        });
+
+        const labels = Object.keys(monthlyTotals);
+        const precipitation = Object.values(monthlyTotals).map(val => val.toFixed(2));
+
+        // Ensure chronological order
+        const sortedMonths = labels
+          .map(label => {
+            const [monthStr, yearStr] = label.split(' ');
+            return { label, date: new Date(`${monthStr} 1, 20${yearStr}`) };
+          })
+          .sort((a, b) => a.date - b.date);
+
+        const sortedLabels = sortedMonths.map(item => item.label);
+        const sortedPrecipitation = sortedLabels.map(label => precipitation[labels.indexOf(label)]);
+
+        lineChart.data.labels = sortedLabels;
+        lineChart.data.datasets[0].data = sortedPrecipitation;
+        lineChart.update();
+
+        // Update rainfall stat card with total for the year
+        const totalRain = Object.values(monthlyTotals).reduce((sum, val) => sum + val, 0);
+        document.getElementById('rainfallValue').textContent = totalRain.toFixed(2);
+
+      } catch (error) {
+        console.error("Error fetching monthly rainfall:", error);
+      }
+    }
+
+    // Initial load of rainfall data
+    loadMonthlyRainfall(-41.42, 173.85);
+
+
+    /***************************************************
+     * 7) HELPER: UPDATE STATS FROM DATA ARRAY
+     ***************************************************/
+    function updateStatsFromData(tableData) {
+      const totalPoints = tableData.length;
+      const remediatedCount = Math.round(totalPoints * 0.8);
+      const watchCount = tableData.filter(r => (r.status || '').toLowerCase().includes('watch')).length;
+      const erosionPercent = Math.round((remediatedCount / totalPoints) * 100) + '%';
+
+      let totalRain = 0;
+      tableData.forEach(r => { totalRain += parseFloat(r.rainfall) || 0; });
+      const avgRain = (totalRain / totalPoints).toFixed(2);
+
+      document.getElementById('totalPoints').textContent = totalPoints;
+      document.getElementById('remediatedPoints').textContent = remediatedCount;
+      document.getElementById('watchPoints').textContent = watchCount;
+      document.getElementById('erosionValue').textContent = erosionPercent;
+      document.getElementById('rainfallValue').textContent = avgRain;
+    }
+
+    /***************************************************
+     * 8) DOWNLOAD PDF FEATURE
+     ***************************************************/
+    document.getElementById('downloadPdfBtn').addEventListener('click', function() {
+      // Use html2pdf to generate PDF of the entire dashboard container
+      html2pdf().from(document.querySelector('.dashboard-container')).set({
+        margin: 10,
+        filename: 'infrastructure_report.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      }).save();
+    });
+  </script>
+</body>
+</html>
