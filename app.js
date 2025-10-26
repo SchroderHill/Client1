@@ -132,7 +132,7 @@ function renderDisplacementChart(canvas, priority, pointId) {
 }
 
 async function fetchPointData(forceRefresh = false) {
-    const dataUrl = 'https://schroderhill.github.io/point_data_RFM/points_geojson.geojson';
+    const dataUrl = 'https://schroderhill.github.io/Client1_pointdata/';
     try {
         const response = await fetch(dataUrl);
         if (!response.ok) {
@@ -954,4 +954,5 @@ window.onkeydown = function(event) {
     destroyDisplacementChart(ctx.canvas);
   }
 };
+
 
