@@ -132,7 +132,7 @@ function renderDisplacementChart(canvas, priority, pointId) {
 }
 
 async function fetchPointData(forceRefresh = false) {
-    const dataUrl = 'https://schroderhill.github.io/Client1_pointdata/';
+    const dataUrl = 'https://schroderhill.github.io/point_data_RFM/points_geojson.geojson';
     try {
         const response = await fetch(dataUrl);
         if (!response.ok) {
@@ -152,7 +152,9 @@ data.features = data.features.map(feature => {
       archived: false,
       watched: false,
       remediated: false,
-      notes: ""
+      notes: "",
+      isCustom: false,
+      dataSource: 'remote'
     }
   };
 });
@@ -171,6 +173,41 @@ data.features = data.features.map(feature => {
             features: []
         };
     }
+}
+
+function normalizeFeatureCollection(collection) {
+  if (!collection?.features?.length) return;
+
+  let fallbackId = Math.max(nextFeatureId, 1);
+  let highestId = fallbackId - 1;
+
+  collection.features.forEach(feature => {
+    if (!feature || typeof feature !== 'object') {
+      return;
+    }
+
+    if (!feature.properties || typeof feature.properties !== 'object') {
+      feature.properties = {};
+    }
+
+    const props = feature.properties;
+    const candidateId = Number(feature.id ?? props.id);
+    const rootId = Number.isFinite(candidateId) ? candidateId : fallbackId++;
+    highestId = Math.max(highestId, rootId);
+
+    feature.id = rootId;
+    props.id = rootId;
+    props.archived = Boolean(props.archived);
+    props.watched = Boolean(props.watched);
+    props.remediated = Boolean(props.remediated);
+    props.notes = props.notes || "";
+    const derivedCustom = props.isCustom === true || props.dataSource === 'user' || (!props.forest && props.priority === 'custom');
+    props.isCustom = derivedCustom;
+    props.dataSource = derivedCustom ? 'user' : (props.dataSource || 'remote');
+  });
+
+  const computedNext = Math.max(highestId + 1, fallbackId);
+  nextFeatureId = Math.max(nextFeatureId, computedNext);
 }
 
 /********** Toast Function **********/
@@ -424,9 +461,12 @@ map.on('load', async () => {
             customPointsData = JSON.parse(savedData);
         }
 
-    if (!customPointsData?.features?.length) {
-      customPointsData = await fetchPointData(true);
-    }
+        normalizeFeatureCollection(customPointsData);
+
+        if (!customPointsData?.features?.length) {
+            customPointsData = await fetchPointData(true);
+            normalizeFeatureCollection(customPointsData);
+        }
 
         // Populate forest filter dropdown
         populateForestFilter(customPointsData.features);
@@ -566,8 +606,8 @@ refreshButton.id = 'btn-refresh';
 refreshButton.className = 'small-button';
 refreshButton.title = 'Force Refresh Points';
 refreshButton.innerHTML = `
-  <svg viewBox="0 0 24 24" width="20" height="20">
-    <path fill="#f9f9f9" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <path fill="#f9f9f9" d="M4 6c0 2.21 3.58 4 8 4s8-1.79 8-4V4c0-2.21-3.58-4-8-4S4 1.79 4 4v2zm0 5c0 2.21 3.58 4 8 4s8-1.79 8-4v-2c0-2.21-3.58-4-8-4s-8 1.79-8 4v2zm0 6c0 2.21 3.58 4 8 4s8-1.79 8-4v-2c0-2.21-3.58-4-8-4s-8 1.79-8 4v2z"/>
   </svg>
 `;
 document.querySelector('.top-right-buttons').appendChild(refreshButton);
@@ -577,6 +617,7 @@ refreshButton.addEventListener('click', async () => {
     try {
         // Force fetch new data
         customPointsData = await fetchPointData(true);
+    normalizeFeatureCollection(customPointsData);
         
         // First remove existing source and layer
         if (map.getLayer('points-layer')) {
@@ -648,7 +689,7 @@ refreshButton.addEventListener('click', async () => {
             );
         });
 
-        showToast('Points refreshed from GitHub');
+        showToast('Refresh points from database');
     } catch (error) {
         console.error('Error refreshing points:', error);
         showToast('Error refreshing points');
@@ -662,6 +703,7 @@ map.on('click', 'points-layer', (e) => {
     const coordinates = e.features[0].geometry.coordinates.slice();
     const id = e.features[0].properties.id;
     const priority = e.features[0].properties.priority;
+  const isCustom = Boolean(e.features[0].properties.isCustom);
     const state = map.getFeatureState({ source: 'custom-points', id: id });
     
     // Create popup content with toggle buttons and notes
@@ -688,16 +730,17 @@ map.on('click', 'points-layer', (e) => {
       </div>
     </div>
         <button class="submit-btn">Submit</button>
+        ${isCustom ? '<button type="button" class="delete-point-btn">Delete point</button>' : ''}
     `;
 
   const graphToggleBtn = popupContent.querySelector('.graph-toggle-btn');
   const graphWrapper = popupContent.querySelector('.graph-wrapper');
-  const graphCanvas = graphWrapper.querySelector('canvas');
+  // const graphCanvas = graphWrapper.querySelector('canvas');
 
   const closeGraph = () => {
     graphToggleBtn.textContent = 'Show Displacement Graph';
     graphWrapper.classList.remove('open');
-    destroyDisplacementChart(graphCanvas);
+    // destroyDisplacementChart(graphCanvas);
     graphWrapper.addEventListener('transitionend', () => {
       graphWrapper.style.display = 'none';
     }, { once: true });
@@ -705,22 +748,10 @@ map.on('click', 'points-layer', (e) => {
 
   const openGraph = () => {
     graphWrapper.style.display = 'block';
+    graphWrapper.innerHTML = '<div style="padding: 20px; text-align: center; color: #ccc;">Currently unavailable</div>';
     requestAnimationFrame(() => {
       graphWrapper.classList.add('open');
       graphToggleBtn.textContent = 'Hide Displacement Graph';
-      requestAnimationFrame(() => {
-        const width = graphWrapper.clientWidth > 0 ? graphWrapper.clientWidth - 4 : 260;
-        graphCanvas.width = width;
-        graphCanvas.height = 220;
-        try {
-          renderDisplacementChart(graphCanvas, priority, id);
-          graphCanvas._displacementChart?.resize();
-        } catch (error) {
-          console.error('Displacement chart error:', error);
-          closeGraph();
-          showToast('Unable to render displacement graph');
-        }
-      });
     });
   };
 
@@ -774,6 +805,13 @@ map.on('click', 'points-layer', (e) => {
         setTimeout(() => popup.remove(), 500);
     });
 
+      const deleteBtn = popupContent.querySelector('.delete-point-btn');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+          deleteCustomPoint(id, popup);
+        });
+      }
+
     // Create and display popup
     const popup = new mapboxgl.Popup({
         closeButton: true,
@@ -785,7 +823,7 @@ map.on('click', 'points-layer', (e) => {
     .addTo(map);
 
   popup.on('close', () => {
-    destroyDisplacementChart(graphCanvas);
+    // destroyDisplacementChart(graphCanvas);
     graphWrapper.classList.remove('open');
     graphWrapper.style.display = 'none';
     graphToggleBtn.textContent = 'Show Displacement Graph';
@@ -816,7 +854,9 @@ map.on('click', (e) => {
       archived: false,
       watched: false,
       remediated: false,
-      notes: ''
+      notes: '',
+      isCustom: true,
+      dataSource: 'user'
     }
   };
 
@@ -838,6 +878,54 @@ map.on('click', (e) => {
     </svg>`;
   showToast(`Point ${newId} added`);
 });
+
+function deleteCustomPoint(pointId, popupInstance) {
+  if (!customPointsData?.features) {
+    showToast('Unable to delete point');
+    return;
+  }
+  const numericId = Number(pointId);
+  if (!Number.isFinite(numericId)) {
+    showToast('Unable to delete point');
+    return;
+  }
+  const featureIndex = customPointsData.features.findIndex(feature => Number(feature.properties.id) === numericId);
+
+  if (featureIndex === -1) {
+    showToast('Unable to delete point');
+    return;
+  }
+
+  const targetFeature = customPointsData.features[featureIndex];
+  if (!targetFeature?.properties?.isCustom) {
+    showToast('Only user-added points can be deleted');
+    return;
+  }
+
+  const [removedFeature] = customPointsData.features.splice(featureIndex, 1);
+  const source = map.getSource('custom-points');
+  if (source) {
+    source.setData(customPointsData);
+  }
+
+  try {
+    map.removeFeatureState({ source: 'custom-points', id: removedFeature.properties.id });
+  } catch (error) {
+    console.warn('Failed to remove feature state for deleted point', error);
+  }
+
+  if (popupInstance) {
+    popupInstance.remove();
+  }
+
+  try {
+    localStorage.setItem('customPointsData', JSON.stringify(customPointsData));
+  } catch (storageError) {
+    console.warn('Failed to persist deletion', storageError);
+  }
+
+  showToast(`Point ${removedFeature.properties.id} deleted`);
+}
 
 function showDisplacementGraph(pointData) {
   const modal = document.getElementById('displacement-modal');
@@ -954,5 +1042,4 @@ window.onkeydown = function(event) {
     destroyDisplacementChart(ctx.canvas);
   }
 };
-
 
