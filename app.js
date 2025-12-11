@@ -132,7 +132,7 @@ function renderDisplacementChart(canvas, priority, pointId) {
 }
 
 async function fetchPointData(forceRefresh = false) {
-    const dataUrl = 'https://schroderhill.github.io/point_data_RFM/points_geojson.geojson';
+    const dataUrl = 'https://schroderhill.github.io/Client1_pointdata/points_geojson.geojson';
     try {
         const response = await fetch(dataUrl);
         if (!response.ok) {
