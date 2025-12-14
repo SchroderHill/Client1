@@ -156,6 +156,77 @@
       background: #950177;
     }
 
+    .error {
+      text-align: center;
+      color: #ff8a8a;
+      margin-top: 0.75rem;
+      min-height: 1.2rem;
+    }
+
+    .map-status {
+      text-align: center;
+      color: #bbb;
+      font-size: 0.9rem;
+      min-height: 1.2rem;
+      margin-top: 0.4rem;
+    }
+
+    .map-status.error {
+      color: #ff8a8a;
+    }
+
+    .table-dropdown {
+      border: 1px solid #3a3b3f;
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      background: #1f2024;
+    }
+    .table-dropdown summary {
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: bold;
+      color: #f1f1f1;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      list-style: none;
+    }
+    .table-dropdown summary::-webkit-details-marker {
+      display: none;
+    }
+    .summary-arrow {
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 8px solid #f1f1f1;
+      transition: transform 0.2s ease;
+    }
+    .table-dropdown[open] .summary-arrow {
+      transform: rotate(180deg);
+    }
+
+    .month-filter {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      color: #ccc;
+      font-size: 0.95rem;
+    }
+    .month-filter select {
+      background: #2a2b2f;
+      border: 1px solid #3a3b3f;
+      color: #fff;
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      min-width: 160px;
+    }
+    .month-filter select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     /* Print Styles */
     @media print {
       .button-bar {
@@ -173,15 +244,12 @@
     <!-- Header -->
     <div class="dashboard-header">
       <h1>Infrastructure Monitoring Report</h1>
-      <h1>Para Forest</h1>
     </div>
 
     <!-- Button Bar for CSV Uploads and PDF Download -->
     <div class="button-bar">
       <!-- CSV Upload for Points Data -->
       <input type="file" id="csvFileInput" accept=".csv" title="Upload Points Data CSV">
-      <!-- Load Sample Data Button -->
-      <button id="loadSampleBtn">Load Sample Data</button>
       <!-- Download PDF Button -->
       <button id="downloadPdfBtn">Download PDF</button>
       <!-- Print Button -->
@@ -192,23 +260,23 @@
     <div class="stats-bar">
       <div class="stat-card">
         <h2>Total Points</h2>
-        <p id="totalPoints">120</p>
+        <p id="totalPoints">--</p>
       </div>
       <div class="stat-card">
         <h2>Remediated</h2>
-        <p id="remediatedPoints">2</p>
+        <p id="remediatedPoints">--</p>
       </div>
       <div class="stat-card">
         <h2>Watching</h2>
-        <p id="watchPoints">0</p>
+        <p id="watchPoints">--</p>
       </div>
       <div class="stat-card">
         <h2>Erosion Susceptibility Risk</h2>
         <p id="erosionValue">High</p>
       </div>
       <div class="stat-card">
-        <h2>Rainfall (mm)</h2>
-        <p id="rainfallValue">Loading...</p>
+        <h2>Points Acknowledged</h2>
+        <p id="acknowledgedPoints">--</p>
       </div>
     </div>
 
@@ -216,7 +284,7 @@
     <div class="main-row">
       <!-- Bar Chart Section -->
       <div class="chart-section">
-        <h3>Exposure By Erosion class</h3>
+        <h3>Exposure by NES-PF Erosion Susceptibility Classification</h3>
         <div class="chart-container">
           <canvas id="barChart"></canvas>
         </div>
@@ -232,26 +300,42 @@
       <div class="map-section">
         <h3>Map Overview</h3>
         <div id="map"></div>
+        <div id="mapStatus" class="map-status"></div>
       </div>
     </div>
 
     <!-- Bottom Table: Points Overview -->
     <div class="bottom-row">
+      <div class="month-filter">
+        <label for="monthFilter">Filter by month:</label>
+        <select id="monthFilter">
+          <option value="all">All months</option>
+        </select>
+      </div>
       <h3>Points Overview</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Point ID</th>
-            <th>Status</th>
-            <th>Erosion Risk</th>
-            <th>Remediated?</th>
-            <th>Rainfall (mm)</th>
-          </tr>
-        </thead>
-        <tbody id="pointsTableBody">
-          <!-- Populated by JS -->
-        </tbody>
-      </table>
+      <details class="table-dropdown" id="pointsToggle">
+        <summary>
+          <span class="summary-arrow"></span>
+          <span id="pointsSummaryText">Show all points</span>
+        </summary>
+        <div>
+          <table>
+            <thead>
+              <tr>
+                <th>Point ID</th>
+                <th>Status</th>
+                <th>Longitude</th>
+                <th>Latitude</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody id="pointsTableBody">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+          <div id="errorMessage" class="error"></div>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -259,45 +343,57 @@
     /***************************************************
      * 1) MAP INIT (Leaflet)
      ***************************************************/
-    const map = L.map('map').setView([-41.42, 173.85], 10);
+    const DEFAULT_CENTER = [-41.42, 173.85];
+    const DEFAULT_ZOOM = 10;
+    const map = L.map('map').setView(DEFAULT_CENTER, DEFAULT_ZOOM);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
-    // Hardcoded GeoJSON data from points_geojson.geojson
-    const geojsonData = {
-      "type": "FeatureCollection",
-      "name": "points_geojson",
-      "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-      "features": [
-        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "fairholme", "date_created": "2025-10-14T17:16:03.586", "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.825113084101162, -41.450378359174032 ] } },
-        { "type": "Feature", "properties": { "id": 1, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.39998, Lon: 173.94205", "status": "watch" }, "geometry": { "type": "Point", "coordinates": [ 173.942053519644503, -41.399980118741027 ] } },
-        { "type": "Feature", "properties": { "id": 2, "priority": "low", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.396353, Lon: 173.9331", "status": "archive" }, "geometry": { "type": "Point", "coordinates": [ 173.933111922710339, -41.396353473959259 ] } },
-        { "type": "Feature", "properties": { "id": 3, "priority": "medium", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.406736, Lon: 173.9405", "status": "watch" }, "geometry": { "type": "Point", "coordinates": [ 173.940505894622817, -41.406735558831571 ] } },
-        { "type": "Feature", "properties": { "id": 4, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.400507, Lon: 173.9488", "status": "remediated" }, "geometry": { "type": "Point", "coordinates": [ 173.948870090229093, -41.400506509577561 ] } },
-        { "type": "Feature", "properties": { "id": 5, "priority": "high", "client": "rfm", "forest": "para", "date_created": "2025-01-29T06:43:10.978", "loacation": "Lat: -41.395523, Lon: 173.9353", "status": "remediated" }, "geometry": { "type": "Point", "coordinates": [ 173.935387682749081, -41.395522907452978 ] } },
-        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "fairholme", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.823855913806085, -41.448796553710132 ] } },
-        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "fairholme", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.826338635995683, -41.445918661002807 ] } },
-        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "jv_road", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.803015191242849, -41.414552300632302 ] } },
-        { "type": "Feature", "properties": { "id": null, "priority": "high", "client": "rfm", "forest": "jvroad", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.806552652128346, -41.415530835791245 ] } },
-        { "type": "Feature", "properties": { "id": null, "priority": "medium", "client": "rfm", "forest": "jvroad", "date_created": null, "loacation": null, "status": null }, "geometry": { "type": "Point", "coordinates": [ 173.803704907352596, -41.411214005299442 ] } }
-      ]
-    };
+    const MAP_GEOJSON_URL = 'https://schroderhill.github.io/Client1_pointdata/points_geojson.geojson';
+    const mapStatusEl = document.getElementById('mapStatus');
 
-    // Add GeoJSON layer to the map
-    const geojsonLayer = L.geoJSON(geojsonData, {
-      pointToLayer: function (feature, latlng) {
-        return L.circleMarker(latlng, {
-          radius: 5,
-          fillColor: "#ff7800",
-          color: "#000",
-          weight: 1,
-          opacity: 1,
-          fillOpacity: 0.8
-        });
+    function setMapStatus(message = '', isError = false) {
+      if (!mapStatusEl) return;
+      mapStatusEl.textContent = message;
+      mapStatusEl.classList.toggle('error', isError);
+    }
+
+    async function loadMapData() {
+      try {
+        setMapStatus('Loading map points...');
+        const response = await fetch(MAP_GEOJSON_URL, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const geojsonData = await response.json();
+        const geojsonLayer = L.geoJSON(geojsonData, {
+          pointToLayer: function (_feature, latlng) {
+            return L.circleMarker(latlng, {
+              radius: 5,
+              fillColor: '#ff7800',
+              color: '#000',
+              weight: 1,
+              opacity: 1,
+              fillOpacity: 0.8
+            });
+          }
+        }).addTo(map);
+
+        const bounds = geojsonLayer.getBounds();
+        if (bounds.isValid()) {
+          map.fitBounds(bounds.pad(0.1));
+        } else {
+          map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+        }
+        setMapStatus('');
+      } catch (error) {
+        console.error('Failed to load map data', error);
+        setMapStatus('Failed to load map points.', true);
       }
-    }).addTo(map);
-    // map.fitBounds(geojsonLayer.getBounds()); // Removed to maintain regional zoom
+    }
+
+    loadMapData();
 
     /***************************************************
      * 2) CHARTS INIT (Chart.js)
@@ -310,7 +406,7 @@
         labels: ['Low', 'Medium', 'High', 'Very High'],
         datasets: [{
           label: 'Exposure (%)',
-          data: [7, 15, 75, 3],
+          data: [1, 1, 100, 1], // Using 1 to render a small bar for 0 values
           backgroundColor: ['#3fcf30','#f9ec00','#f58a00','#f70000']
         }]
       },
@@ -341,7 +437,9 @@
                   label += ': ';
                 }
                 if (context.parsed.y !== null) {
-                  label += context.parsed.y + '%';
+                  // Show 0% if value is the placeholder 1
+                  const val = context.parsed.y === 1 ? 0 : context.parsed.y;
+                  label += val + '%';
                 }
                 return label;
               }
@@ -390,40 +488,213 @@
     });
 
     /***************************************************
-     * 3) DEFAULT TABLE DATA (Points Overview)
+     * 3) GOOGLE SHEET DATA (Points Overview)
      ***************************************************/
-    const defaultTableData = [
-      { id: 'P1', status: 'Alert',    erosion: 'High',     remediated: 'No',  rainfall: 98 },
-      { id: 'P2', status: 'Watching', erosion: 'Medium',   remediated: 'No',  rainfall: 75 },
-      { id: 'P3', status: 'Archived', erosion: 'Low',      remediated: 'Yes', rainfall: 60 },
-      { id: 'P4', status: 'Alert',    erosion: 'Very High',remediated: 'No',  rainfall: 120 },
-      { id: 'P5', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 88 },
-    ];
+    const SHEET_PUBLISH_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQ1og_gVncTe4fpzDZsLZorEhS4fQtDBbqsa0rFHInH7NN3J9owDTbHKbTB9kO27n1kMD1CL6odRjMZ/pubhtml';
+    const CSV_URL = SHEET_PUBLISH_URL.replace('pubhtml', 'pub?output=csv');
+    const WATCH_STATUSES = ['watched', 'watching', 'watch'];
+    const tableBody = document.getElementById('pointsTableBody');
+    const pointsSummaryText = document.getElementById('pointsSummaryText');
+    const pointsToggle = document.getElementById('pointsToggle');
+    const monthFilterSelect = document.getElementById('monthFilter');
 
-    const tbody = document.getElementById('pointsTableBody');
-    function fillTable(tableData) {
-      tbody.innerHTML = '';
-      tableData.forEach(item => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${item.id}</td>
-          <td>${item.status}</td>
-          <td>${item.erosion}</td>
-          <td>${item.remediated}</td>
-          <td>${item.rainfall}</td>
-        `;
-        tbody.appendChild(tr);
+    let allRows = [];
+    let currentMonthFilter = 'all';
+
+    if (monthFilterSelect) {
+      monthFilterSelect.addEventListener('change', (event) => {
+        currentMonthFilter = event.target.value || 'all';
+        applyMonthFilter();
       });
     }
-    fillTable(defaultTableData);
 
-    // Default Stats
-    const defaultTotalPoints = 120;
-    document.getElementById('totalPoints').textContent = defaultTotalPoints;
-    document.getElementById('remediatedPoints').textContent = Math.round(defaultTotalPoints * 0.8);
-    document.getElementById('watchPoints').textContent = geojsonData.features.length;
-    document.getElementById('erosionValue').textContent = 'High';   
-    document.getElementById('rainfallValue').textContent = 'Loading...'; 
+    loadSheetData();
+
+    function loadSheetData() {
+      tableBody.innerHTML = '<tr><td colspan="5">Loading...</td></tr>';
+      Papa.parse(CSV_URL, {
+        download: true,
+        header: false,
+        skipEmptyLines: true,
+        complete: (results) => {
+          const rows = normalizeRows(results.data);
+          if (!rows.length) {
+            showError('No data found in the published sheet.');
+            setAllRows([]);
+            return;
+          }
+          showError('');
+          setAllRows(rows);
+        },
+        error: (err) => {
+          showError('Failed to load CSV: ' + err.message);
+          setAllRows([]);
+        }
+      });
+    }
+
+    function normalizeRows(rawRows) {
+      if (!Array.isArray(rawRows) || rawRows.length === 0) {
+        return [];
+      }
+
+      const headerIndex = rawRows.findIndex(row => row.some(cell => {
+        if (!cell) return false;
+        const value = cell.toString().toLowerCase();
+        return value.includes('point id') || value.includes('status');
+      }));
+
+      if (headerIndex === -1) {
+        showError('Could not locate header row in the CSV.');
+        return [];
+      }
+
+      const headerRow = rawRows[headerIndex].map(cell => (cell || '').toString().trim().toLowerCase());
+      const dataRows = rawRows.slice(headerIndex + 1);
+
+      return dataRows
+        .map(row => {
+          const record = {};
+          row.forEach((value, idx) => {
+            const key = headerRow[idx] || `col_${idx}`;
+            record[key] = (value ?? '').toString().trim();
+          });
+          return normalizeRecord(record);
+        })
+        .filter(row => row.id || row.status || row.longitude || row.latitude);
+    }
+
+    function normalizeRecord(record) {
+      const normalized = {};
+      Object.keys(record || {}).forEach(key => {
+        if (!key) return;
+        const cleanKey = key.replace(/\ufeff/g, '').trim().toLowerCase();
+        normalized[cleanKey] = (record[key] ?? '').toString().trim();
+      });
+      const dateValue = normalized['date'] || normalized['timestamp'] || '';
+      const monthParts = getMonthParts(normalized['month'] || '', dateValue);
+      return {
+        id: normalized['point id'] || normalized['point_id'] || normalized['pointid'] || normalized['id'] || '',
+        status: normalized['status'] || '',
+        longitude: normalized['longitude'] || normalized['lon'] || normalized['long'] || '',
+        latitude: normalized['latitude'] || normalized['lat'] || '',
+        date: dateValue,
+        monthLabel: monthParts.label,
+        monthSortKey: monthParts.sortKey
+      };
+    }
+
+    function getMonthParts(monthValue, dateValue) {
+      const parsedDate = parseDateSafe(dateValue);
+      const cleanMonth = monthValue || '';
+      const label = cleanMonth || (parsedDate
+        ? parsedDate.toLocaleString('default', { month: 'long', year: 'numeric' })
+        : '');
+      const sortKey = parsedDate
+        ? `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}`
+        : (label ? label.toLowerCase() : '');
+      return { label: label.trim(), sortKey };
+    }
+
+    function parseDateSafe(value) {
+      if (!value) return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function setAllRows(rows) {
+      allRows = Array.isArray(rows) ? rows : [];
+      populateMonthFilter(allRows);
+      applyMonthFilter();
+    }
+
+    function populateMonthFilter(rows) {
+      if (!monthFilterSelect) return;
+      const previousValue = currentMonthFilter;
+      const monthMap = new Map();
+      rows.forEach(row => {
+        if (!row.monthLabel) return;
+        if (!monthMap.has(row.monthLabel)) {
+          monthMap.set(row.monthLabel, row.monthSortKey || row.monthLabel.toLowerCase());
+        }
+      });
+
+      const sortedMonths = Array.from(monthMap.entries())
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(entry => entry[0]);
+
+      monthFilterSelect.innerHTML = '<option value="all">All months</option>';
+      sortedMonths.forEach(label => {
+        const option = document.createElement('option');
+        option.value = label;
+        option.textContent = label;
+        monthFilterSelect.appendChild(option);
+      });
+
+      const hasPrevious = previousValue !== 'all' && sortedMonths.includes(previousValue);
+      currentMonthFilter = hasPrevious ? previousValue : 'all';
+      monthFilterSelect.value = currentMonthFilter;
+      monthFilterSelect.disabled = sortedMonths.length === 0;
+    }
+
+    function applyMonthFilter() {
+      const activeRows = currentMonthFilter === 'all'
+        ? allRows
+        : allRows.filter(row => row.monthLabel === currentMonthFilter);
+      renderPointsTable(activeRows);
+      updateSheetStats(activeRows);
+      updatePointsSummary(activeRows.length, currentMonthFilter);
+    }
+
+    function updateSheetStats(rows) {
+      const total = rows.length;
+      const remediated = rows.filter(row => (row.status || '').toLowerCase() === 'remediated').length;
+      const watching = rows.filter(row => WATCH_STATUSES.includes((row.status || '').toLowerCase())).length;
+      const acknowledged = rows.filter(row => (row.status || '').toLowerCase() === 'archived').length;
+
+      document.getElementById('totalPoints').textContent = total;
+      document.getElementById('remediatedPoints').textContent = remediated;
+      document.getElementById('watchPoints').textContent = watching;
+      document.getElementById('acknowledgedPoints').textContent = acknowledged;
+    }
+
+    function renderPointsTable(rows) {
+      tableBody.innerHTML = '';
+      if (!rows.length) {
+        tableBody.innerHTML = '<tr><td colspan="5">No data found</td></tr>';
+        return;
+      }
+
+      rows.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${row.id || 'N/A'}</td>
+          <td>${row.status || 'N/A'}</td>
+          <td>${row.longitude || 'N/A'}</td>
+          <td>${row.latitude || 'N/A'}</td>
+          <td>${row.date || 'N/A'}</td>
+        `;
+        tableBody.appendChild(tr);
+      });
+    }
+
+    function showError(message) {
+      document.getElementById('errorMessage').textContent = message;
+    }
+
+    function updatePointsSummary(count, activeFilter = 'all') {
+      if (!pointsSummaryText) return;
+      let label;
+      if (activeFilter && activeFilter !== 'all') {
+        label = count > 0 ? `Show ${activeFilter} (${count}) points` : `Show ${activeFilter} points`;
+      } else {
+        label = count > 0 ? `Show all ${count} points` : 'Show all points';
+      }
+      pointsSummaryText.textContent = label;
+      if (pointsToggle && count === 0) {
+        pointsToggle.open = false;
+      }
+    }
 
     /***************************************************
      * 4) CSV UPLOAD FOR POINTS DATA
@@ -436,54 +707,23 @@
         header: true,
         skipEmptyLines: true,
         complete: function(results) {
-          const data = results.data;
-          if (!data || data.length === 0) return;
-          
-          // Expecting columns: 'Point ID', 'Status', 'Longitude', 'Latitude', ...
-          const csvTableData = data.map(row => {
-            return {
-              id: row['Point ID'] || 'Unknown',
-              status: row['Status'] || 'N/A',
-              erosion: 'N/A', // Not in new CSV
-              remediated: (row['Status'] || '').toLowerCase() === 'remediated' ? 'Yes' : 'No',
-              rainfall: 'N/A' // Not in new CSV
-            };
-          });
-          fillTable(csvTableData);
+          const normalizedRows = (results.data || [])
+            .map(row => normalizeRecord(row))
+            .filter(row => row.id || row.status || row.longitude || row.latitude);
 
-          // Update stats from CSV data
-          const totalPoints = data.length;
-          const remediatedCount = data.filter(r => (r.Status || '').toLowerCase() === 'remediated').length;
-          const watchCount = data.filter(r => (r.Status || '').toLowerCase() === 'watched').length;
-          
-          document.getElementById('totalPoints').textContent = totalPoints;
-          document.getElementById('remediatedPoints').textContent = remediatedCount;
-          document.getElementById('watchPoints').textContent = watchCount;
-          // document.getElementById('erosionValue').textContent = '...'; // Not updated from this CSV
-          // document.getElementById('rainfallValue').textContent = '...'; // Not updated from this CSV
+          if (!normalizedRows.length) {
+            showError('Uploaded CSV did not contain recognizable data.');
+            return;
+          }
+
+          showError('');
+          setAllRows(normalizedRows);
         }
       });
     });
 
     /***************************************************
-     * 5) LOAD SAMPLE DATA BUTTON FOR POINTS
-     ***************************************************/
-    document.getElementById('loadSampleBtn').addEventListener('click', function() {
-      const sampleData = [
-        { id: 'S1', status: 'Alert',    erosion: 'High',     remediated: 'No',  rainfall: 120 },
-        { id: 'S2', status: 'Watching', erosion: 'Medium',   remediated: 'No',  rainfall: 85 },
-        { id: 'S3', status: 'Archived', erosion: 'Low',      remediated: 'Yes', rainfall: 42 },
-        { id: 'S4', status: 'Alert',    erosion: 'Very High',remediated: 'No',  rainfall: 150 },
-        { id: 'S5', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 60 },
-        { id: 'S6', status: 'Remediated', erosion: 'Low',    remediated: 'Yes', rainfall: 55 }
-      ];
-      fillTable(sampleData);
-      // Update stats from sample data
-      updateStatsFromData(sampleData);
-    });
-
-    /***************************************************
-     * 6) RAINFALL API FETCH
+     * 5) RAINFALL API FETCH
      ***************************************************/
     async function loadMonthlyRainfall(lat, lng) {
       const endDate = new Date();
@@ -524,10 +764,6 @@
         lineChart.data.datasets[0].data = sortedPrecipitation;
         lineChart.update();
 
-        // Update rainfall stat card with total for the year
-        const totalRain = Object.values(monthlyTotals).reduce((sum, val) => sum + val, 0);
-        document.getElementById('rainfallValue').textContent = totalRain.toFixed(2);
-
       } catch (error) {
         console.error("Error fetching monthly rainfall:", error);
       }
@@ -538,27 +774,7 @@
 
 
     /***************************************************
-     * 7) HELPER: UPDATE STATS FROM DATA ARRAY
-     ***************************************************/
-    function updateStatsFromData(tableData) {
-      const totalPoints = tableData.length;
-      const remediatedCount = Math.round(totalPoints * 0.8);
-      const watchCount = tableData.filter(r => (r.status || '').toLowerCase().includes('watch')).length;
-      const erosionPercent = Math.round((remediatedCount / totalPoints) * 100) + '%';
-
-      let totalRain = 0;
-      tableData.forEach(r => { totalRain += parseFloat(r.rainfall) || 0; });
-      const avgRain = (totalRain / totalPoints).toFixed(2);
-
-      document.getElementById('totalPoints').textContent = totalPoints;
-      document.getElementById('remediatedPoints').textContent = remediatedCount;
-      document.getElementById('watchPoints').textContent = watchCount;
-      document.getElementById('erosionValue').textContent = erosionPercent;
-      document.getElementById('rainfallValue').textContent = avgRain;
-    }
-
-    /***************************************************
-     * 8) DOWNLOAD PDF FEATURE
+     * 7) DOWNLOAD PDF FEATURE
      ***************************************************/
     document.getElementById('downloadPdfBtn').addEventListener('click', function() {
       // Use html2pdf to generate PDF of the entire dashboard container
