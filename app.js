@@ -163,6 +163,7 @@ data.features = data.features.map(feature => {
         nextFeatureId = Math.max(...data.features.map(f => f.properties.id)) + 1;
         lastFetchTime = Date.now();
         localStorage.setItem('lastFetchTime', lastFetchTime.toString());
+        persistCustomPointsData(data);
         
         return data;
     } catch (error) {
@@ -208,6 +209,15 @@ function normalizeFeatureCollection(collection) {
 
   const computedNext = Math.max(highestId + 1, fallbackId);
   nextFeatureId = Math.max(nextFeatureId, computedNext);
+}
+
+function persistCustomPointsData(data = customPointsData) {
+  if (!data) return;
+  try {
+    localStorage.setItem('customPointsData', JSON.stringify(data));
+  } catch (error) {
+    console.warn('Failed to persist point data', error);
+  }
 }
 
 /********** Toast Function **********/
@@ -689,6 +699,14 @@ refreshButton.addEventListener('click', async () => {
             );
         });
 
+        populateForestFilter(customPointsData.features);
+        const forestSelect = document.getElementById('forest-select');
+        if (forestSelect) {
+          forestSelect.value = 'all';
+        }
+
+        persistCustomPointsData();
+
         showToast('Refresh points from database');
     } catch (error) {
         console.error('Error refreshing points:', error);
@@ -918,11 +936,7 @@ function deleteCustomPoint(pointId, popupInstance) {
     popupInstance.remove();
   }
 
-  try {
-    localStorage.setItem('customPointsData', JSON.stringify(customPointsData));
-  } catch (storageError) {
-    console.warn('Failed to persist deletion', storageError);
-  }
+  persistCustomPointsData();
 
   showToast(`Point ${removedFeature.properties.id} deleted`);
 }
