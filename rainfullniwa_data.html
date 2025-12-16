@@ -208,6 +208,7 @@
 
     .month-filter {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 0.5rem;
       margin-bottom: 0.5rem;
@@ -311,6 +312,10 @@
         <select id="monthFilter">
           <option value="all">All months</option>
         </select>
+        <label for="forestFilter">Filter by forest:</label>
+        <select id="forestFilter">
+          <option value="all">All forests</option>
+        </select>
       </div>
       <h3>Points Overview</h3>
       <details class="table-dropdown" id="pointsToggle">
@@ -326,6 +331,7 @@
                 <th>Status</th>
                 <th>Longitude</th>
                 <th>Latitude</th>
+                <th>Forest</th>
                 <th>Date</th>
               </tr>
             </thead>
@@ -497,21 +503,30 @@
     const pointsSummaryText = document.getElementById('pointsSummaryText');
     const pointsToggle = document.getElementById('pointsToggle');
     const monthFilterSelect = document.getElementById('monthFilter');
+    const forestFilterSelect = document.getElementById('forestFilter');
 
     let allRows = [];
     let currentMonthFilter = 'all';
+    let currentForestFilter = 'all';
 
     if (monthFilterSelect) {
       monthFilterSelect.addEventListener('change', (event) => {
         currentMonthFilter = event.target.value || 'all';
-        applyMonthFilter();
+        applyFilters();
+      });
+    }
+
+    if (forestFilterSelect) {
+      forestFilterSelect.addEventListener('change', (event) => {
+        currentForestFilter = event.target.value || 'all';
+        applyFilters();
       });
     }
 
     loadSheetData();
 
     function loadSheetData() {
-      tableBody.innerHTML = '<tr><td colspan="5">Loading...</td></tr>';
+      tableBody.innerHTML = '<tr><td colspan="6">Loading...</td></tr>';
       Papa.parse(CSV_URL, {
         download: true,
         header: false,
@@ -578,6 +593,7 @@
         status: normalized['status'] || '',
         longitude: normalized['longitude'] || normalized['lon'] || normalized['long'] || '',
         latitude: normalized['latitude'] || normalized['lat'] || '',
+        forest: normalized['forest'] || '',
         date: dateValue,
         monthLabel: monthParts.label,
         monthSortKey: monthParts.sortKey
@@ -605,7 +621,8 @@
     function setAllRows(rows) {
       allRows = Array.isArray(rows) ? rows : [];
       populateMonthFilter(allRows);
-      applyMonthFilter();
+      populateForestFilter(allRows);
+      applyFilters();
     }
 
     function populateMonthFilter(rows) {
@@ -637,13 +654,43 @@
       monthFilterSelect.disabled = sortedMonths.length === 0;
     }
 
-    function applyMonthFilter() {
-      const activeRows = currentMonthFilter === 'all'
+    function populateForestFilter(rows) {
+      if (!forestFilterSelect) return;
+      const previousValue = currentForestFilter;
+      const forestSet = new Set();
+      rows.forEach(row => {
+        if (row.forest) {
+          forestSet.add(row.forest);
+        }
+      });
+
+      forestFilterSelect.innerHTML = '<option value="all">All forests</option>';
+      Array.from(forestSet)
+        .sort((a, b) => a.localeCompare(b))
+        .forEach(label => {
+          const option = document.createElement('option');
+          option.value = label;
+          option.textContent = label;
+          forestFilterSelect.appendChild(option);
+        });
+
+      const hasPrevious = previousValue !== 'all' && forestSet.has(previousValue);
+      currentForestFilter = hasPrevious ? previousValue : 'all';
+      forestFilterSelect.value = currentForestFilter;
+      forestFilterSelect.disabled = forestSet.size === 0;
+    }
+
+    function applyFilters() {
+      let activeRows = currentMonthFilter === 'all'
         ? allRows
         : allRows.filter(row => row.monthLabel === currentMonthFilter);
+
+      if (currentForestFilter !== 'all') {
+        activeRows = activeRows.filter(row => row.forest === currentForestFilter);
+      }
       renderPointsTable(activeRows);
       updateSheetStats(activeRows);
-      updatePointsSummary(activeRows.length, currentMonthFilter);
+      updatePointsSummary(activeRows.length);
     }
 
     function updateSheetStats(rows) {
@@ -661,7 +708,7 @@
     function renderPointsTable(rows) {
       tableBody.innerHTML = '';
       if (!rows.length) {
-        tableBody.innerHTML = '<tr><td colspan="5">No data found</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="6">No data found</td></tr>';
         return;
       }
 
@@ -672,6 +719,7 @@
           <td>${row.status || 'N/A'}</td>
           <td>${row.longitude || 'N/A'}</td>
           <td>${row.latitude || 'N/A'}</td>
+          <td>${row.forest || 'N/A'}</td>
           <td>${row.date || 'N/A'}</td>
         `;
         tableBody.appendChild(tr);
@@ -682,14 +730,14 @@
       document.getElementById('errorMessage').textContent = message;
     }
 
-    function updatePointsSummary(count, activeFilter = 'all') {
+    function updatePointsSummary(count) {
       if (!pointsSummaryText) return;
-      let label;
-      if (activeFilter && activeFilter !== 'all') {
-        label = count > 0 ? `Show ${activeFilter} (${count}) points` : `Show ${activeFilter} points`;
-      } else {
-        label = count > 0 ? `Show all ${count} points` : 'Show all points';
-      }
+      const monthLabel = currentMonthFilter !== 'all' ? currentMonthFilter : 'all months';
+      const forestLabel = currentForestFilter !== 'all' ? currentForestFilter : 'all forests';
+      const scopeLabel = `${monthLabel} / ${forestLabel}`;
+      const label = count > 0
+        ? `Show ${scopeLabel} (${count}) points`
+        : `Show ${scopeLabel} points`;
       pointsSummaryText.textContent = label;
       if (pointsToggle && count === 0) {
         pointsToggle.open = false;
