@@ -30,6 +30,26 @@ const DISPLACEMENT_SERIES = {
   }
 };
 
+function getFeatureCoordinates(feature) {
+  if (!feature?.geometry || feature.geometry.type !== 'Point') {
+    return null;
+  }
+  const coords = feature.geometry.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) {
+    return null;
+  }
+  const lng = Number(coords[0]);
+  const lat = Number(coords[1]);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+    return null;
+  }
+  return [lng, lat];
+}
+
+function hasValidCoordinates(feature) {
+  return Boolean(getFeatureCoordinates(feature));
+}
+
 function getDisplacementSeries(priority, pointId) {
   const baseline = DISPLACEMENT_SERIES[priority] || DISPLACEMENT_SERIES.default;
   const seed = Number(pointId);
@@ -179,18 +199,34 @@ data.features = data.features.map(feature => {
 function normalizeFeatureCollection(collection) {
   if (!collection?.features?.length) return;
 
-  let fallbackId = Math.max(nextFeatureId, 1);
-  let highestId = fallbackId - 1;
-
-  collection.features.forEach(feature => {
+  collection.features = collection.features.filter(feature => {
     if (!feature || typeof feature !== 'object') {
-      return;
+      return false;
     }
 
     if (!feature.properties || typeof feature.properties !== 'object') {
       feature.properties = {};
     }
 
+    const coords = getFeatureCoordinates(feature);
+    if (!coords) {
+      return false;
+    }
+    if (feature.geometry) {
+      feature.geometry.coordinates = coords;
+    }
+    return true;
+  });
+
+  if (!collection.features.length) {
+    nextFeatureId = Math.max(nextFeatureId, 1);
+    return;
+  }
+
+  let fallbackId = Math.max(nextFeatureId, 1);
+  let highestId = fallbackId - 1;
+
+  collection.features.forEach(feature => {
     const props = feature.properties;
     const candidateId = Number(feature.id ?? props.id);
     const rootId = Number.isFinite(candidateId) ? candidateId : fallbackId++;
