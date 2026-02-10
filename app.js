@@ -30,6 +30,35 @@ const DISPLACEMENT_SERIES = {
   }
 };
 
+const PLUNKETT_TIFF_CONFIG = {
+  url: 'https://schroderhill.github.io/Client1/Tiff_BG.tif',
+  canvasId: 'plunkett-canvas',
+  sourceId: 'plunkett-forest-canvas',
+  layerId: 'plunkett-forest-layer',
+  fallbackBounds: [
+    [173.7170948836, -41.2912899981],
+    [173.9274322848, -41.2912899981],
+    [173.9274322848, -41.4293281716],
+    [173.7170948836, -41.4293281716]
+  ],
+  autoHideZoom: 11
+};
+
+const BASE_PROJECTION = 'globe';
+const PLUNKETT_PROJECTION = 'mercator';
+let currentProjection = BASE_PROJECTION;
+
+const baseRasterLayerIds = [];
+const plunkettOverlayState = {
+  currentOpacity: 0,
+  isVisible: false,
+  isAnimating: false,
+  animationFrame: null,
+  loadPromise: null,
+  coordinates: null,
+  autoHidePending: false
+};
+
 function getFeatureCoordinates(feature) {
   if (!feature?.geometry || feature.geometry.type !== 'Point') {
     return null;
@@ -151,10 +180,22 @@ function renderDisplacementChart(canvas, priority, pointId) {
   });
 }
 
-async function fetchPointData(forceRefresh = false) {
+function clearLocalPointStorage() {
+  try {
+    localStorage.removeItem('customPointsData');
+    localStorage.removeItem('lastFetchTime');
+  } catch (error) {
+    console.warn('Failed to clear cached point data', error);
+  }
+}
+
+async function fetchPointData(options = {}) {
+    const { forceRemote = false } = options;
     const dataUrl = 'https://schroderhill.github.io/Client1_pointdata/points_geojson.geojson';
+    const cacheBustedUrl = forceRemote ? `${dataUrl}?t=${Date.now()}` : dataUrl;
+    const fetchOptions = forceRemote ? { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } } : {};
     try {
-        const response = await fetch(dataUrl);
+        const response = await fetch(cacheBustedUrl, fetchOptions);
         if (!response.ok) {
             throw new Error('Network response was not ok');
         }
@@ -256,6 +297,279 @@ function persistCustomPointsData(data = customPointsData) {
   }
 }
 
+function captureBaseRasterLayers() {
+  baseRasterLayerIds.length = 0;
+  if (!map?.getStyle) return;
+  const style = map.getStyle();
+  if (!style?.layers) return;
+  style.layers.forEach(layer => {
+    if (layer.type === 'raster') {
+      baseRasterLayerIds.push(layer.id);
+    }
+  });
+}
+
+function setOverlayOpacity(value) {
+  const clamped = Math.max(0, Math.min(1, value));
+  plunkettOverlayState.currentOpacity = clamped;
+  if (map.getLayer && map.getLayer(PLUNKETT_TIFF_CONFIG.layerId)) {
+    map.setPaintProperty(PLUNKETT_TIFF_CONFIG.layerId, 'raster-opacity', clamped);
+  }
+  updatePlunkettButtonState();
+}
+
+function updatePlunkettButtonState() {
+  const btn = document.getElementById('btn-regional');
+  if (!btn) return;
+  const isActive = plunkettOverlayState.currentOpacity > 0.05;
+  btn.classList.toggle('active', isActive);
+  btn.setAttribute('aria-pressed', String(isActive));
+}
+
+function normalizePixelValue(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 1) {
+    return Math.max(0, Math.min(255, Math.round(value * 255)));
+  }
+  if (value > 255) {
+    const scaled = value > 4095 ? value / 16 : value / 256;
+    return Math.max(0, Math.min(255, Math.round(scaled)));
+  }
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function computeChannelStats(raster, samplesPerPixel) {
+  if (!raster || !samplesPerPixel) return null;
+  const mins = new Array(samplesPerPixel).fill(Infinity);
+  const maxs = new Array(samplesPerPixel).fill(-Infinity);
+  for (let i = 0; i < raster.length; i += samplesPerPixel) {
+    for (let channel = 0; channel < samplesPerPixel; channel++) {
+      const value = raster[i + channel];
+      if (!Number.isFinite(value)) continue;
+      if (value < mins[channel]) mins[channel] = value;
+      if (value > maxs[channel]) maxs[channel] = value;
+    }
+  }
+  if (samplesPerPixel >= 4) {
+    mins[3] = 0;
+    maxs[3] = 255;
+  }
+  return { mins, maxs };
+}
+
+function scaleChannelValue(value, channelIndex, stats) {
+  if (!Number.isFinite(value)) return 0;
+  const min = stats?.mins?.[channelIndex];
+  const max = stats?.maxs?.[channelIndex];
+  if (typeof min === 'number' && typeof max === 'number' && max > min) {
+    const ratio = (value - min) / (max - min);
+    const scaled = Math.round(ratio * 255);
+    return Math.max(0, Math.min(255, scaled));
+  }
+  return normalizePixelValue(value);
+}
+
+function rasterToImageData(raster, samplesPerPixel, width, height, stats) {
+  const output = new Uint8ClampedArray(width * height * 4);
+  const directCopy = samplesPerPixel === 4 && raster?.BYTES_PER_ELEMENT === 1;
+  if (directCopy) {
+    output.set(raster);
+    return output;
+  }
+  for (let i = 0, j = 0; i < raster.length; i += samplesPerPixel, j += 4) {
+    const r = raster[i];
+    const g = samplesPerPixel > 1 ? raster[i + 1] : raster[i];
+    const b = samplesPerPixel > 2 ? raster[i + 2] : raster[i];
+    const a = 255;
+    output[j] = scaleChannelValue(r, 0, stats);
+    output[j + 1] = scaleChannelValue(g, Math.min(1, samplesPerPixel - 1), stats);
+    output[j + 2] = scaleChannelValue(b, Math.min(2, samplesPerPixel - 1), stats);
+    output[j + 3] = a;
+  }
+  return output;
+}
+
+function deriveGeoTiffCoordinates(image) {
+  const bbox = image.getBoundingBox?.();
+  if (Array.isArray(bbox) && bbox.length === 4 && bbox.every(Number.isFinite)) {
+    return [
+      [bbox[0], bbox[3]],
+      [bbox[2], bbox[3]],
+      [bbox[2], bbox[1]],
+      [bbox[0], bbox[1]]
+    ];
+  }
+  if (Array.isArray(PLUNKETT_TIFF_CONFIG.fallbackBounds)) {
+    return PLUNKETT_TIFF_CONFIG.fallbackBounds;
+  }
+  throw new Error('Unable to derive GeoTIFF bounds. Set PLUNKETT_TIFF_CONFIG.fallbackBounds.');
+}
+
+async function loadPlunkettGeoTiff() {
+  if (plunkettOverlayState.loadPromise) {
+    return plunkettOverlayState.loadPromise;
+  }
+  plunkettOverlayState.loadPromise = (async () => {
+    if (typeof GeoTIFF === 'undefined') {
+      throw new Error('GeoTIFF library unavailable');
+    }
+    if (!PLUNKETT_TIFF_CONFIG.url) {
+      throw new Error('Plunkett GeoTIFF URL is missing');
+    }
+    const tiff = await GeoTIFF.fromUrl(PLUNKETT_TIFF_CONFIG.url, { allowFullFile: true });
+    const image = await tiff.getImage();
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const raster = await image.readRasters({ interleave: true });
+    const samplesPerPixel = image.getSamplesPerPixel();
+    const stats = computeChannelStats(raster, samplesPerPixel);
+    const canvas = document.getElementById(PLUNKETT_TIFF_CONFIG.canvasId);
+    if (!canvas) {
+      throw new Error('Plunkett canvas element not found');
+    }
+    const ctx = canvas.getContext('2d');
+    canvas.width = width;
+    canvas.height = height;
+    const buffer = rasterToImageData(raster, samplesPerPixel, width, height, stats);
+    const imageData = ctx.createImageData(width, height);
+    imageData.data.set(buffer);
+    ctx.putImageData(imageData, 0, 0);
+    plunkettOverlayState.coordinates = deriveGeoTiffCoordinates(image);
+    console.log('Plunkett GeoTIFF loaded', {
+      width,
+      height,
+      samplesPerPixel,
+      bitsPerSample: image.getBitsPerSample?.(),
+      stats,
+      boundingBox: plunkettOverlayState.coordinates
+    });
+    return { coordinates: plunkettOverlayState.coordinates };
+  })().catch(error => {
+    plunkettOverlayState.loadPromise = null;
+    throw error;
+  });
+  return plunkettOverlayState.loadPromise;
+}
+
+async function ensurePlunkettSource(options = {}) {
+  if (!map) {
+    throw new Error('Map is not initialized');
+  }
+  const { forceReadd = false } = options;
+  await loadPlunkettGeoTiff();
+  const { sourceId, layerId, canvasId } = PLUNKETT_TIFF_CONFIG;
+  if (forceReadd) {
+    if (map.getLayer(layerId)) {
+      map.removeLayer(layerId);
+    }
+    if (map.getSource(sourceId)) {
+      map.removeSource(sourceId);
+    }
+  }
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: 'canvas',
+      canvas: canvasId,
+      coordinates: plunkettOverlayState.coordinates,
+      animate: false
+    });
+  }
+  if (!map.getLayer(layerId)) {
+    const beforeId = map.getLayer('points-layer') ? 'points-layer' : undefined;
+    map.addLayer({
+      id: layerId,
+      type: 'raster',
+      source: sourceId,
+      paint: { 'raster-opacity': plunkettOverlayState.currentOpacity }
+    }, beforeId);
+  }
+}
+
+function runPlunkettFade(targetOpacity) {
+  setOverlayOpacity(targetOpacity);
+  plunkettOverlayState.isAnimating = false;
+  plunkettOverlayState.animationFrame = null;
+  plunkettOverlayState.isVisible = targetOpacity === 1;
+}
+
+function reapplyPlunkettOverlayIfNeeded() {
+  if (plunkettOverlayState.currentOpacity <= 0) {
+    if (currentProjection !== BASE_PROJECTION) {
+      map.setProjection(BASE_PROJECTION);
+      currentProjection = BASE_PROJECTION;
+      spinEnabled = true;
+    }
+    return;
+  }
+  ensurePlunkettSource({ forceReadd: true })
+    .then(() => {
+      if (currentProjection !== PLUNKETT_PROJECTION) {
+        map.setProjection(PLUNKETT_PROJECTION);
+        currentProjection = PLUNKETT_PROJECTION;
+        spinEnabled = false;
+      }
+      setOverlayOpacity(plunkettOverlayState.currentOpacity);
+    })
+    .catch(error => {
+      console.error('Failed to reapply Plunkett overlay', error);
+    });
+}
+
+function handlePlunkettAutoHide() {
+  const threshold = Number(PLUNKETT_TIFF_CONFIG.autoHideZoom);
+  if (!Number.isFinite(threshold)) {
+    return;
+  }
+  if (!plunkettOverlayState.isVisible || plunkettOverlayState.isAnimating || plunkettOverlayState.autoHidePending) {
+    return;
+  }
+  const currentZoom = map.getZoom();
+  if (!Number.isFinite(currentZoom) || currentZoom >= threshold) {
+    return;
+  }
+  plunkettOverlayState.autoHidePending = true;
+  togglePlunkettOverlay()
+    .then(() => {
+      showToast('Satellite view restored for overview zoom');
+    })
+    .catch(error => {
+      console.error('Failed to auto-hide Plunkett imagery', error);
+    })
+    .finally(() => {
+      plunkettOverlayState.autoHidePending = false;
+    });
+}
+
+async function togglePlunkettOverlay() {
+  if (plunkettOverlayState.isAnimating) {
+    showToast('Overlay animation in progress');
+    return;
+  }
+  if (!map?.isStyleLoaded()) {
+    showToast('Map is still loading');
+    return;
+  }
+  try {
+    await ensurePlunkettSource();
+    const targetOpacity = plunkettOverlayState.isVisible ? 0 : 1;
+    if (targetOpacity === 1 && currentProjection !== PLUNKETT_PROJECTION) {
+      map.setProjection(PLUNKETT_PROJECTION);
+      currentProjection = PLUNKETT_PROJECTION;
+      spinEnabled = false;
+    } else if (targetOpacity === 0 && currentProjection !== BASE_PROJECTION) {
+      map.setProjection(BASE_PROJECTION);
+      currentProjection = BASE_PROJECTION;
+      spinEnabled = true;
+    }
+    runPlunkettFade(targetOpacity);
+  } catch (error) {
+    console.error('Failed to toggle Plunkett overlay', error);
+    showToast('Unable to load Plunkett imagery');
+  }
+}
+
 /********** Toast Function **********/
 function showToast(message) {
   const toast = document.createElement('div');
@@ -285,6 +599,10 @@ const map = new mapboxgl.Map({
 
 map.on('style.load', () => {
   map.setFog({});
+  captureBaseRasterLayers();
+  if (plunkettOverlayState.currentOpacity > 0) {
+    reapplyPlunkettOverlayIfNeeded();
+  }
 });
 
 /********** Rotation Configuration **********/
@@ -315,6 +633,7 @@ map.on('dragend', () => { userInteracting = false; spinGlobe(); });
 map.on('pitchend', () => { userInteracting = false; spinGlobe(); });
 map.on('rotateend', () => { userInteracting = false; spinGlobe(); });
 map.on('moveend', () => { spinGlobe(); });
+map.on('zoomend', handlePlunkettAutoHide);
 
 /********** Save Session Button **********/
 document.getElementById('btn-save').addEventListener('click', () => {
@@ -346,12 +665,13 @@ document.getElementById('btn-flyto').addEventListener('click', () => {
   map.fitBounds(bounds, { padding: 50, duration: 2000 });
 });
 
-/********** Regional View Button Functionality **********/
+/********** Plunkett Overlay Toggle (Regional Button) **********/
 document.getElementById('btn-regional').addEventListener('click', () => {
-  // Fly back to a regional view using zoom level 4 and the original center
-  map.flyTo({ center: [173.942053519644503, -41.399980118741027], zoom: 4, duration: 7000 });
-  showToast("Regional view activated");
+  const enableOverlay = !plunkettOverlayState.isVisible;
+  togglePlunkettOverlay();
+  showToast(enableOverlay ? 'Plunkett imagery enabled' : 'Satellite view restored');
 });
+updatePlunkettButtonState();
 
 /********** Add Point Button (Toggle) **********/
 document.getElementById('btn-add').addEventListener('click', () => {
@@ -510,7 +830,7 @@ map.on('load', async () => {
         normalizeFeatureCollection(customPointsData);
 
         if (!customPointsData?.features?.length) {
-            customPointsData = await fetchPointData(true);
+            customPointsData = await fetchPointData({ forceRemote: true });
             normalizeFeatureCollection(customPointsData);
         }
 
@@ -660,66 +980,67 @@ document.querySelector('.top-right-buttons').appendChild(refreshButton);
 
 // Add refresh button event listener
 refreshButton.addEventListener('click', async () => {
-    try {
-        // Force fetch new data
-        customPointsData = await fetchPointData(true);
+  try {
+    // Force fetch new data from GitHub
+    customPointsData = await fetchPointData({ forceRemote: true });
     normalizeFeatureCollection(customPointsData);
-        
-        // First remove existing source and layer
-        if (map.getLayer('points-layer')) {
-            map.removeLayer('points-layer');
-        }
+    clearLocalPointStorage();
+
+    // First remove existing source and layer
+    if (map.getLayer('points-layer')) {
+      map.removeLayer('points-layer');
+    }
     if (map.getSource('custom-points')) {
       map.removeSource('custom-points');
     }
-        
-        // Add source and layer again
+
+    // Add source and layer again
     map.addSource('custom-points', {
       type: 'geojson',
       data: customPointsData,
       promoteId: 'id' // Ensure 'id' is promoted for feature states
     });
 
-        map.addLayer({
-            id: 'points-layer',
-            type: 'circle',
-            source: 'custom-points',
-            paint: {
-                'circle-radius': [
-                    'case',
-                    ['boolean', ['feature-state', 'watched'], false],
-                    ['coalesce', ['feature-state', 'pulse'], 6],
-                    6
-                ],
-                'circle-color': [
-                    'match',
-                    ['get', 'priority'],
-                    'high', '#FF0000',
-                    'medium', '#FFA500',
-                    'low', '#008000',
-                    'custom', '#00FFFF',
-                    '#000000'
-                ],
-                'circle-opacity': [
-                    'case',
-                    ['boolean', ['feature-state', 'archived'], false],
-                    0.3,  // When archived, set opacity to 0.3
-                    1     // Otherwise, full opacity
-                ],
-                'circle-stroke-color': [
-                    'case',
-                    ['boolean', ['feature-state', 'remediated'], false], '#00FF00',
-                    ['boolean', ['feature-state', 'watched'], false], '#FFFFFF',
-                    'transparent'
-                ],
-                'circle-stroke-width': [
-                    'case',
-                    ['boolean', ['feature-state', 'remediated'], false], 2,
-                    ['boolean', ['feature-state', 'watched'], false], 2,
-                    0
-                ]
-            }
-        });
+    map.addLayer({
+      id: 'points-layer',
+      type: 'circle',
+      source: 'custom-points',
+      paint: {
+        'circle-radius': [
+          'case',
+          ['boolean', ['feature-state', 'watched'], false],
+          ['coalesce', ['feature-state', 'pulse'], 6],
+          6
+        ],
+        'circle-color': [
+          'match',
+          ['get', 'priority'],
+          'high', '#FF0000',
+          'medium', '#FFA500',
+          'low', '#008000',
+          'custom', '#00FFFF',
+          '#000000'
+        ],
+        'circle-opacity': [
+          'case',
+          ['boolean', ['feature-state', 'archived'], false],
+          0.3,  // When archived, set opacity to 0.3
+          1     // Otherwise, full opacity
+        ],
+        'circle-stroke-color': [
+          'case',
+          ['boolean', ['feature-state', 'remediated'], false], '#00FF00',
+          ['boolean', ['feature-state', 'watched'], false], '#FFFFFF',
+          'transparent'
+        ],
+        'circle-stroke-width': [
+          'case',
+          ['boolean', ['feature-state', 'remediated'], false], 2,
+          ['boolean', ['feature-state', 'watched'], false], 2,
+          0
+        ]
+      }
+    });
 
         // Set feature states after layer is added
         customPointsData.features.forEach(feature => {
