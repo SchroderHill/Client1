@@ -587,7 +587,7 @@
         normalized[cleanKey] = (record[key] ?? '').toString().trim();
       });
       const dateValue = normalized['date'] || normalized['timestamp'] || '';
-      const monthParts = getMonthParts(normalized['month'] || '', dateValue);
+      const monthParts = getMonthParts(normalized['month'] || '');
       return {
         id: normalized['point id'] || normalized['point_id'] || normalized['pointid'] || normalized['id'] || '',
         status: normalized['status'] || '',
@@ -600,16 +600,9 @@
       };
     }
 
-    function getMonthParts(monthValue, dateValue) {
-      const parsedDate = parseDateSafe(dateValue);
-      const cleanMonth = monthValue || '';
-      const label = cleanMonth || (parsedDate
-        ? parsedDate.toLocaleString('default', { month: 'long', year: 'numeric' })
-        : '');
-      const sortKey = parsedDate
-        ? `${parsedDate.getFullYear()}-${String(parsedDate.getMonth() + 1).padStart(2, '0')}`
-        : (label ? label.toLowerCase() : '');
-      return { label: label.trim(), sortKey };
+    function getMonthParts(monthValue) {
+      const label = (monthValue || '').trim();
+      return { label, sortKey: label.toLowerCase() };
     }
 
     function parseDateSafe(value) {
@@ -636,9 +629,7 @@
         }
       });
 
-      const sortedMonths = Array.from(monthMap.entries())
-        .sort((a, b) => a[1].localeCompare(b[1]))
-        .map(entry => entry[0]);
+      const sortedMonths = Array.from(monthMap.keys()); // preserve sheet order
 
       monthFilterSelect.innerHTML = '<option value="all">All months</option>';
       sortedMonths.forEach(label => {
