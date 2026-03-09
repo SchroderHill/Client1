@@ -30,19 +30,38 @@ const DISPLACEMENT_SERIES = {
   }
 };
 
-const PLUNKETT_TIFF_CONFIG = {
-  url: 'https://schroderhill.github.io/Client1/Tiff_BG.tif',
-  canvasId: 'plunkett-canvas',
-  sourceId: 'plunkett-forest-canvas',
-  layerId: 'plunkett-forest-layer',
-  fallbackBounds: [
-    [173.7170948836, -41.2912899981],
-    [173.9274322848, -41.2912899981],
-    [173.9274322848, -41.4293281716],
-    [173.7170948836, -41.4293281716]
-  ],
-  autoHideZoom: 11
-};
+const PLUNKETT_TIFF_CONFIGS = [
+  {
+    url: 'https://schroderhill.github.io/Client1/Tiff_Hadley.tif',
+    canvasId: 'hadley-canvas',
+    sourceId: 'hadley-canvas-source',
+    layerId: 'hadley-layer',
+    fallbackBounds: null // Auto-detect from TIFF
+  },
+  {
+    url: 'https://schroderhill.github.io/Client1/Tiff_Plunkett.tif',
+    canvasId: 'plunkett-canvas',
+    sourceId: 'plunkett-canvas-source',
+    layerId: 'plunkett-layer',
+    fallbackBounds: null // Auto-detect from TIFF
+  },
+  {
+    url: 'https://schroderhill.github.io/Client1/Disp_Plunkett.tif',
+    canvasId: 'displacement-canvas',
+    sourceId: 'displacement-canvas-source',
+    layerId: 'displacement-layer',
+    fallbackBounds: null // Auto-detect from TIFF
+  },
+  {
+    url: 'https://schroderhill.github.io/Client1/Disp_Hadley.tif',
+    canvasId: 'displacement-hadley-canvas',
+    sourceId: 'displacement-hadley-canvas-source',
+    layerId: 'displacement-hadley-layer',
+    fallbackBounds: null // Auto-detect from TIFF
+  }
+];
+
+const PLUNKETT_AUTO_HIDE_ZOOM = 11;
 
 const BASE_PROJECTION = 'globe';
 const PLUNKETT_PROJECTION = 'mercator';
@@ -54,8 +73,8 @@ const plunkettOverlayState = {
   isVisible: false,
   isAnimating: false,
   animationFrame: null,
-  loadPromise: null,
-  coordinates: null,
+  loadPromises: [],
+  tiffData: [], // Stores {coordinates, config} for each TIFF
   autoHidePending: false
 };
 
@@ -312,9 +331,12 @@ function captureBaseRasterLayers() {
 function setOverlayOpacity(value) {
   const clamped = Math.max(0, Math.min(1, value));
   plunkettOverlayState.currentOpacity = clamped;
-  if (map.getLayer && map.getLayer(PLUNKETT_TIFF_CONFIG.layerId)) {
-    map.setPaintProperty(PLUNKETT_TIFF_CONFIG.layerId, 'raster-opacity', clamped);
-  }
+  // Update opacity for all TIFF layers
+  PLUNKETT_TIFF_CONFIGS.forEach(config => {
+    if (map.getLayer && map.getLayer(config.layerId)) {
+      map.setPaintProperty(config.layerId, 'raster-opacity', clamped);
+    }
+  });
   updatePlunkettButtonState();
 }
 
@@ -391,7 +413,7 @@ function rasterToImageData(raster, samplesPerPixel, width, height, stats) {
   return output;
 }
 
-function deriveGeoTiffCoordinates(image) {
+function deriveGeoTiffCoordinates(image, fallbackBounds) {
   const bbox = image.getBoundingBox?.();
   if (Array.isArray(bbox) && bbox.length === 4 && bbox.every(Number.isFinite)) {
     return [
@@ -401,33 +423,33 @@ function deriveGeoTiffCoordinates(image) {
       [bbox[0], bbox[1]]
     ];
   }
-  if (Array.isArray(PLUNKETT_TIFF_CONFIG.fallbackBounds)) {
-    return PLUNKETT_TIFF_CONFIG.fallbackBounds;
+  if (Array.isArray(fallbackBounds)) {
+    return fallbackBounds;
   }
-  throw new Error('Unable to derive GeoTIFF bounds. Set PLUNKETT_TIFF_CONFIG.fallbackBounds.');
+  throw new Error('Unable to derive GeoTIFF bounds. No fallback bounds provided.');
 }
 
-async function loadPlunkettGeoTiff() {
-  if (plunkettOverlayState.loadPromise) {
-    return plunkettOverlayState.loadPromise;
+async function loadSingleGeoTiff(config, index) {
+  if (plunkettOverlayState.loadPromises[index]) {
+    return plunkettOverlayState.loadPromises[index];
   }
-  plunkettOverlayState.loadPromise = (async () => {
+  plunkettOverlayState.loadPromises[index] = (async () => {
     if (typeof GeoTIFF === 'undefined') {
       throw new Error('GeoTIFF library unavailable');
     }
-    if (!PLUNKETT_TIFF_CONFIG.url) {
-      throw new Error('Plunkett GeoTIFF URL is missing');
+    if (!config.url) {
+      throw new Error(`GeoTIFF URL is missing for ${config.canvasId}`);
     }
-    const tiff = await GeoTIFF.fromUrl(PLUNKETT_TIFF_CONFIG.url, { allowFullFile: true });
+    const tiff = await GeoTIFF.fromUrl(config.url, { allowFullFile: true });
     const image = await tiff.getImage();
     const width = image.getWidth();
     const height = image.getHeight();
     const raster = await image.readRasters({ interleave: true });
     const samplesPerPixel = image.getSamplesPerPixel();
     const stats = computeChannelStats(raster, samplesPerPixel);
-    const canvas = document.getElementById(PLUNKETT_TIFF_CONFIG.canvasId);
+    const canvas = document.getElementById(config.canvasId);
     if (!canvas) {
-      throw new Error('Plunkett canvas element not found');
+      throw new Error(`Canvas element not found: ${config.canvasId}`);
     }
     const ctx = canvas.getContext('2d');
     canvas.width = width;
@@ -436,21 +458,29 @@ async function loadPlunkettGeoTiff() {
     const imageData = ctx.createImageData(width, height);
     imageData.data.set(buffer);
     ctx.putImageData(imageData, 0, 0);
-    plunkettOverlayState.coordinates = deriveGeoTiffCoordinates(image);
-    console.log('Plunkett GeoTIFF loaded', {
+    const coordinates = deriveGeoTiffCoordinates(image, config.fallbackBounds);
+    console.log(`GeoTIFF loaded: ${config.canvasId}`, {
       width,
       height,
       samplesPerPixel,
       bitsPerSample: image.getBitsPerSample?.(),
       stats,
-      boundingBox: plunkettOverlayState.coordinates
+      boundingBox: coordinates
     });
-    return { coordinates: plunkettOverlayState.coordinates };
+    return { coordinates, config };
   })().catch(error => {
-    plunkettOverlayState.loadPromise = null;
+    plunkettOverlayState.loadPromises[index] = null;
     throw error;
   });
-  return plunkettOverlayState.loadPromise;
+  return plunkettOverlayState.loadPromises[index];
+}
+
+async function loadAllPlunkettGeoTiffs() {
+  const results = await Promise.all(
+    PLUNKETT_TIFF_CONFIGS.map((config, index) => loadSingleGeoTiff(config, index))
+  );
+  plunkettOverlayState.tiffData = results;
+  return results;
 }
 
 async function ensurePlunkettSource(options = {}) {
@@ -458,33 +488,41 @@ async function ensurePlunkettSource(options = {}) {
     throw new Error('Map is not initialized');
   }
   const { forceReadd = false } = options;
-  await loadPlunkettGeoTiff();
-  const { sourceId, layerId, canvasId } = PLUNKETT_TIFF_CONFIG;
-  if (forceReadd) {
-    if (map.getLayer(layerId)) {
-      map.removeLayer(layerId);
+  await loadAllPlunkettGeoTiffs();
+  
+  const beforeId = map.getLayer('points-layer') ? 'points-layer' : undefined;
+  
+  // Add sources and layers for each TIFF
+  plunkettOverlayState.tiffData.forEach(({ coordinates, config }) => {
+    const { sourceId, layerId, canvasId } = config;
+    
+    if (forceReadd) {
+      if (map.getLayer(layerId)) {
+        map.removeLayer(layerId);
+      }
+      if (map.getSource(sourceId)) {
+        map.removeSource(sourceId);
+      }
     }
-    if (map.getSource(sourceId)) {
-      map.removeSource(sourceId);
+    
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: 'canvas',
+        canvas: canvasId,
+        coordinates: coordinates,
+        animate: false
+      });
     }
-  }
-  if (!map.getSource(sourceId)) {
-    map.addSource(sourceId, {
-      type: 'canvas',
-      canvas: canvasId,
-      coordinates: plunkettOverlayState.coordinates,
-      animate: false
-    });
-  }
-  if (!map.getLayer(layerId)) {
-    const beforeId = map.getLayer('points-layer') ? 'points-layer' : undefined;
-    map.addLayer({
-      id: layerId,
-      type: 'raster',
-      source: sourceId,
-      paint: { 'raster-opacity': plunkettOverlayState.currentOpacity }
-    }, beforeId);
-  }
+    
+    if (!map.getLayer(layerId)) {
+      map.addLayer({
+        id: layerId,
+        type: 'raster',
+        source: sourceId,
+        paint: { 'raster-opacity': plunkettOverlayState.currentOpacity }
+      }, beforeId);
+    }
+  });
 }
 
 function runPlunkettFade(targetOpacity) {
@@ -518,7 +556,7 @@ function reapplyPlunkettOverlayIfNeeded() {
 }
 
 function handlePlunkettAutoHide() {
-  const threshold = Number(PLUNKETT_TIFF_CONFIG.autoHideZoom);
+  const threshold = Number(PLUNKETT_AUTO_HIDE_ZOOM);
   if (!Number.isFinite(threshold)) {
     return;
   }
@@ -566,7 +604,7 @@ async function togglePlunkettOverlay() {
     runPlunkettFade(targetOpacity);
   } catch (error) {
     console.error('Failed to toggle Plunkett overlay', error);
-    showToast('Unable to load Plunkett imagery');
+    showToast('Unable to load Sentinel 2 imagery');
   }
 }
 
@@ -669,7 +707,7 @@ document.getElementById('btn-flyto').addEventListener('click', () => {
 document.getElementById('btn-regional').addEventListener('click', () => {
   const enableOverlay = !plunkettOverlayState.isVisible;
   togglePlunkettOverlay();
-  showToast(enableOverlay ? 'Plunkett imagery enabled' : 'Satellite view restored');
+  showToast(enableOverlay ? 'Sentinel 2 imagery enabled' : 'Satellite view restored');
 });
 updatePlunkettButtonState();
 
